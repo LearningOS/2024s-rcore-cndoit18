@@ -16,6 +16,7 @@ mod task;
 
 use crate::loader::{get_app_data, get_num_app};
 use crate::sync::UPSafeCell;
+use crate::timer::get_time_ms;
 use crate::trap::TrapContext;
 use alloc::vec::Vec;
 use lazy_static::*;
@@ -79,9 +80,10 @@ impl TaskManager {
         let mut inner = self.inner.exclusive_access();
         let next_task = &mut inner.tasks[0];
         next_task.task_status = TaskStatus::Running;
+        next_task.time = Some(get_time_ms());
         let next_task_cx_ptr = &next_task.task_cx as *const TaskContext;
         drop(inner);
-        let mut _unused = TaskContext::zero_init();
+        let mut _unused: TaskContext = TaskContext::zero_init();
         // before this, we should drop local variables that must be dropped manually
         unsafe {
             __switch(&mut _unused as *mut _, next_task_cx_ptr);
@@ -114,10 +116,36 @@ impl TaskManager {
             .find(|id| inner.tasks[*id].task_status == TaskStatus::Ready)
     }
 
+    ///
+    fn memory_alloc(&self, start_va: usize, end_va: usize, port: usize) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_alloc(start_va, end_va, port)
+    }
+
+    /// 
+    fn memory_free(&self, start_va: usize, end_va: usize) -> bool {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].memory_free(start_va, end_va)
+    }
+
     /// Get the current 'Running' task's token.
     fn get_current_token(&self) -> usize {
         let inner = self.inner.exclusive_access();
         inner.tasks[inner.current_task].get_user_token()
+    }
+
+    fn increase_current_syscall(&self, syscall: usize) {
+        let mut inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        inner.tasks[current].syscall_times[syscall] += 1;
+    }
+
+    fn get_current_task_info<T: for<'a> From<&'a TaskControlBlock>>(&self) -> T {
+        let inner = self.inner.exclusive_access();
+        let current = inner.current_task;
+        (&inner.tasks[current]).into()
     }
 
     /// Get the current 'Running' task's trap contexts.
@@ -140,6 +168,9 @@ impl TaskManager {
             let mut inner = self.inner.exclusive_access();
             let current = inner.current_task;
             inner.tasks[next].task_status = TaskStatus::Running;
+            if inner.tasks[next].time.is_none() {
+                inner.tasks[next].time = Some(get_time_ms())
+            }
             inner.current_task = next;
             let current_task_cx_ptr = &mut inner.tasks[current].task_cx as *mut TaskContext;
             let next_task_cx_ptr = &inner.tasks[next].task_cx as *const TaskContext;
@@ -169,6 +200,26 @@ fn run_next_task() {
 /// Change the status of current `Running` task into `Ready`.
 fn mark_current_suspended() {
     TASK_MANAGER.mark_current_suspended();
+}
+
+///
+pub fn increase_current_syscall(syscall: usize) {
+    TASK_MANAGER.increase_current_syscall(syscall);
+}
+
+///
+pub fn get_current_task_info<T: for<'a> From<&'a TaskControlBlock>>() -> T {
+    TASK_MANAGER.get_current_task_info()
+}
+
+///
+pub fn memory_alloc(start_va: usize, end_va: usize, port: usize) -> bool {
+    TASK_MANAGER.memory_alloc(start_va, end_va, port)
+}
+
+///
+pub fn memory_free(start_va: usize, end_va: usize) -> bool {
+    TASK_MANAGER.memory_free(start_va, end_va)
 }
 
 /// Change the status of current `Running` task into `Exited`.

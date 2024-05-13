@@ -1,8 +1,9 @@
 //! Types related to task management
 use super::TaskContext;
-use crate::config::TRAP_CONTEXT_BASE;
+use crate::config::{MAX_SYSCALL_NUM, TRAP_CONTEXT_BASE};
 use crate::mm::{
-    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr, KERNEL_SPACE,
+    kernel_stack_position, MapPermission, MemorySet, PhysPageNum, VirtAddr,
+    KERNEL_SPACE,
 };
 use crate::trap::{trap_handler, TrapContext};
 
@@ -28,6 +29,12 @@ pub struct TaskControlBlock {
 
     /// Program break
     pub program_brk: usize,
+
+    /// The numbers of syscall called
+    pub syscall_times: [u32; MAX_SYSCALL_NUM],
+
+    /// Total running time
+    pub time: Option<usize>,
 }
 
 impl TaskControlBlock {
@@ -39,6 +46,40 @@ impl TaskControlBlock {
     pub fn get_user_token(&self) -> usize {
         self.memory_set.token()
     }
+    ///
+    pub fn memory_free(&mut self, start_va: usize, end_va: usize) -> bool {
+        let start_va = VirtAddr::from(start_va);
+        let end_va = VirtAddr::from(end_va);
+        if !start_va.aligned() {
+            return false
+        }
+        self.memory_set
+            .remove_framed_area(start_va.floor(), end_va.ceil())
+    }
+    ///
+    pub fn memory_alloc(&mut self, start_va: usize, end_va: usize, port: usize) -> bool {
+        let start_va = VirtAddr::from(start_va);
+        let end_va = VirtAddr::from(end_va);
+        if !start_va.aligned() || port & !0x7 != 0 || port & 0x7 == 0  || start_va >= end_va {
+            return false;
+        }
+        if self
+            .memory_set
+            .find_conflicts(start_va.floor(), end_va.ceil())
+            .is_some()
+        {
+            return false;
+        }
+        let mut permission = MapPermission::from_bits((port as u8) << 1).unwrap();
+        permission.set(MapPermission::U, true);
+        self.memory_set.insert_framed_area(
+            start_va,
+            end_va,
+            permission,
+        );
+        return true;
+    }
+
     /// Based on the elf info in program, build the contents of task in a new address space
     pub fn new(elf_data: &[u8], app_id: usize) -> Self {
         // memory_set with elf program headers/trampoline/trap context/user stack
@@ -63,6 +104,8 @@ impl TaskControlBlock {
             base_size: user_sp,
             heap_bottom: user_sp,
             program_brk: user_sp,
+            syscall_times: [0; MAX_SYSCALL_NUM],
+            time: None,
         };
         // prepare TrapContext in user space
         let trap_cx = task_control_block.get_trap_cx();

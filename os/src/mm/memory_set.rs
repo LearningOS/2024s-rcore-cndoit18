@@ -51,6 +51,23 @@ impl MemorySet {
     pub fn token(&self) -> usize {
         self.page_table.token()
     }
+
+    ///
+    pub fn find_conflicts(&mut self, start_va: VirtPageNum, end_va: VirtPageNum) -> Option<usize> {
+        self.areas.iter().position(|area| {
+            end_va > area.vpn_range.get_start() && start_va < area.vpn_range.get_end()
+        })
+    }
+    ///
+    pub fn remove_framed_area(&mut self, start_va: VirtPageNum, end_va: VirtPageNum) -> bool {
+        if let Some(i) = self.areas.iter().position(|area| {
+            start_va == area.vpn_range.get_start() && end_va == area.vpn_range.get_end()
+        }) {
+            self.areas.remove(i).unmap(&mut self.page_table);
+            return true;
+        }
+        false
+    }
     /// Assume that no conflicts.
     pub fn insert_framed_area(
         &mut self,
