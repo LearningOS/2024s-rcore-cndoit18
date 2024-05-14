@@ -66,6 +66,26 @@ impl MemorySet {
             None,
         );
     }
+
+    ///
+    pub fn is_conflicts(&self, start_va: VirtAddr, end_va: VirtAddr) -> bool {
+        self.areas.iter().any(|area| {
+            end_va.ceil() > area.vpn_range.get_start()
+                && start_va.floor() < area.vpn_range.get_end()
+        })
+    }
+
+    ///
+    pub fn remove_area(&mut self, start_vpn: VirtPageNum, end_vpn: VirtPageNum) -> bool {
+        if let Some(i) = self.areas.iter().position(|area| {
+            start_vpn == area.vpn_range.get_start() && end_vpn == area.vpn_range.get_end()
+        }) {
+            self.areas.remove(i).unmap(&mut self.page_table);
+            return true;
+        }
+        false
+    }
+
     /// remove a area
     pub fn remove_area_with_start_vpn(&mut self, start_vpn: VirtPageNum) {
         if let Some((idx, area)) = self
