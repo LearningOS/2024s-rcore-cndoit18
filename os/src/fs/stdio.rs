@@ -39,9 +39,19 @@ impl File for Stdin {
     fn write(&self, _user_buf: UserBuffer) -> usize {
         panic!("Cannot write to stdin!");
     }
+    fn stat(&self, st: &mut super::Stat) -> isize {
+        st.nlink = 1;
+        st.mode = super::StatMode::FILE;
+        0
+    }
 }
 
 impl File for Stdout {
+    fn stat(&self, st: &mut super::Stat) -> isize {
+        st.nlink = 1;
+        st.mode = super::StatMode::FILE;
+        0
+    }
     fn readable(&self) -> bool {
         false
     }
