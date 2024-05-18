@@ -49,9 +49,133 @@ pub struct ProcessControlBlockInner {
     pub semaphore_list: Vec<Option<Arc<Semaphore>>>,
     /// condvar list
     pub condvar_list: Vec<Option<Arc<Condvar>>>,
+    ///
+    pub availables: ResourceResourceBlock,
+    ///
+    pub allocation_list: Vec<ResourceResourceBlock>,
+    ///
+    pub need_list: Vec<ResourceResourceBlock>,
+    ///
+    pub enable_deadlock_detect: bool,
+}
+
+struct ResourceBlockInner {
+    key: Resource,
+    val: usize,
+}
+
+#[derive(PartialEq, Copy, Clone)]
+///
+pub enum Resource {
+    ///
+    Mutex(usize),
+    ///
+    Semaphore(usize),
+}
+
+///
+pub struct ResourceResourceBlock {
+    inner: Vec<UPSafeCell<ResourceBlockInner>>,
+}
+
+impl ResourceResourceBlock {
+    ///
+    pub fn new() -> Self {
+        ResourceResourceBlock { inner: Vec::new() }
+    }
+
+    ///
+    pub fn list_resource(&self) -> Vec<Resource> {
+        self.inner
+            .iter()
+            .map(|r| r.exclusive_access().key)
+            .collect()
+    }
+    ///
+    pub fn sub(&mut self, res: Resource, val: usize) -> Option<usize> {
+        self.inner
+            .iter_mut()
+            .find(|r| r.exclusive_access().key == res)
+            .map(|r| {
+                let mut inner = r.exclusive_access();
+                let original = inner.val;
+                inner.val = inner.val.saturating_sub(val);
+                original - inner.val
+            })
+    }
+    ///
+    pub fn find(&self, res: Resource) -> Option<usize> {
+        self.inner
+            .iter()
+            .find(|r| r.exclusive_access().key == res)
+            .map(|r| r.exclusive_access().val)
+    }
+    ///
+    pub fn add(&mut self, res: Resource, val: usize) {
+        let inner = &mut self.inner;
+        let need_push = inner
+            .iter_mut()
+            .find(|r| r.exclusive_access().key == res)
+            .map(|r| r.exclusive_access().val += val)
+            .is_none();
+        if need_push {
+            unsafe {
+                inner.push(UPSafeCell::new(ResourceBlockInner { key: res, val }));
+            }
+        }
+    }
 }
 
 impl ProcessControlBlockInner {
+    pub fn deadlock_detect(&self) -> bool {
+        let resources = self.availables.list_resource();
+        let mut finish: Vec<bool> = (0..self.tasks.len()).map(|_| false).collect();
+        let mut work: Vec<usize> = resources
+            .iter()
+            .map(|&res| self.availables.find(res).unwrap_or(0))
+            .collect();
+
+        loop {
+            if let Some((i, _)) = finish.iter().enumerate().find(|(index, ok)| {
+                let o = self.need_list.get(*index);
+                !*ok && (o.is_none()
+                    || o.map(|r: &ResourceResourceBlock| {
+                        resources
+                            .iter()
+                            .map(|&res| r.find(res).unwrap_or(0))
+                            .collect::<Vec<usize>>()
+                    })
+                    .map(|r| {
+                        r.iter()
+                            .enumerate()
+                            .fold(true, |acc, (i, &x)| acc && (work[i] >= x))
+                    })
+                    .unwrap_or_default())
+            }) {
+                self.allocation_list
+                    .get(i)
+                    .map(|r| {
+                        resources
+                            .iter()
+                            .map(|&res| r.find(res).unwrap_or(0))
+                            .collect::<Vec<usize>>()
+                    })
+                    .map(|x| {
+                        x.iter().enumerate().for_each(|(index, v)| {
+                            work[index] += *v;
+                        })
+                    });
+                finish[i] = true;
+            } else {
+                break;
+            }
+        }
+        if finish.iter().any(|&b| b == false) {
+            return true;
+        }
+        return false;
+    }
+
     #[allow(unused)]
     /// get the address of app's page table
     pub fn get_user_token(&self) -> usize {
@@ -119,6 +243,10 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    availables: ResourceResourceBlock::new(),
+                    allocation_list: Vec::new(),
+                    need_list: Vec::new(),
+                    enable_deadlock_detect: false,
                 })
             },
         });
@@ -245,6 +373,10 @@ impl ProcessControlBlock {
                     mutex_list: Vec::new(),
                     semaphore_list: Vec::new(),
                     condvar_list: Vec::new(),
+                    availables: ResourceResourceBlock::new(),
+                    allocation_list: Vec::new(),
+                    need_list: Vec::new(),
+                    enable_deadlock_detect: false,
                 })
             },
         });
